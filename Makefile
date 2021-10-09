@@ -52,6 +52,7 @@ HARBOR_PHOTON_REGISTRY_DOCKERFILE_PATH=$(BUILDPATH)/make/photon/registry/Dockerf
 HARBOR_PHOTON_TRIVY-ADAPTER_DOCKERFILE_PATH=$(BUILDPATH)/make/photon/trivy-adapter/Dockerfile.binary
 HARBOR_PHOTON_NOTARY_DOCKERFILE_PATH=$(BUILDPATH)/make/photon/notary/binary.Dockerfile
 HARBOR_PHOTON_PORTAL_DOCKERFILE_PATH=$(BUILDPATH)/make/photon/portal/Dockerfile
+HARBOR_PHOTON_EXPORTER_PATH=$(BUILDPATH)/make/photon/exporter/Dockerfile
 HARBOR_PUSHIMAGE_PATH=$(BUILDPATH)/make/pushimage.sh
 
 # download goharbor/harbor parammeters
@@ -66,6 +67,7 @@ MAKEPATH=$(BUILDPATH)/make
 MAKE_COMPILE=compile
 MAKE_BUILD_BASE=build_base_docker
 MAKE_ONLINE=package_online
+MAKE_OFFLINE=package_offline
 MAKE_BUILD=build
 
 # parameters
@@ -73,12 +75,12 @@ BUILD_PG96=false
 DEVFLAG=true
 BUILDBIN=true
 
+# package
+TARCMD=$(shell which tar)
+ZIPCMD=$(shell which gzip)
+DOCKERIMGFILE=harbor-arm
+HARBORPKG=harbor-arm
 
-#versions
-TRIVYVERSION=v0.17.2
-TRIVYADAPTERVERSION=v0.19.0
-
-# version prepare
 
 # for docker image tag
 VERSIONTAG=dev-arm
@@ -89,11 +91,6 @@ BASEIMAGENAMESPACE=goharbor
 
 # #input true/false only
 PULL_BASE_FROM_DOCKERHUB=true
-
-# dependency binaries
-TRIVY_DOWNLOAD_URL=https://github.com/aquasecurity/trivy/releases/download/$(TRIVYVERSION)/trivy_$(TRIVYVERSION:v%=%)_Linux-ARM64.tar.gz
-TRIVY_ADAPTER_DOWNLOAD_URL=https://github.com/aquasecurity/harbor-scanner-trivy/releases/download/$(TRIVYADAPTERVERSION)/harbor-scanner-trivy_$(TRIVYADAPTERVERSION:v%=%)_Linux_arm64.tar.gz
-
 
 # sed location
 SEDCMD=$(shell which sed)
@@ -109,12 +106,18 @@ REGISTRYPASSWORD=
 _update_makefile:
 	@echo "update goharbor makefile"
 	@$(SEDCMDI) 's/--rm/--rm --env CGO_ENABLED=0 --env GOOS=linux --env GOARCH=arm64/g' $(HARBOR_MAKEFILE_PATH);
-	@$(SEDCMDI) 's/$$(DOCKERBUILD)/docker buildx build --platform linux\/arm64 --progress plain --output=type=registry/g' $(HARBOR_MAKEFILE_PATH)
+	@$(SEDCMDI) 's/$$(DOCKERBUILD)/docker buildx build --platform linux\/arm64 --progress plain --output=type=docker/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/gen_apis: lint_apis/gen_apis:/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/_Linux-64bit.tar.gz/_Linux-ARM64.tar.gz/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/_Linux_x86_64.tar.gz/_Linux_arm64.tar.gz/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/VERSIONTAG=dev/VERSIONTAG=dev-arm/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/BASEIMAGETAG=dev/BASEIMAGETAG=dev-arm/g' $(HARBOR_MAKEFILE_PATH);
+	@$(SEDCMDI) 's/BUILD_PG96=true/BUILD_PG96=false/g' $(HARBOR_MAKEFILE_PATH);
 	
 
 _update_make_photon_makefile:
 	@echo "update goharbor photon makefile"
-	@$(SEDCMDI) 's/$(DOCKERCMD) build/$(DOCKERCMD) buildx build --platform linux\/arm64 --progress plain --output=type=registry/' $(HARBOR_PHOTON_MAKEFILE_PATH)
+	@$(SEDCMDI) 's/$(DOCKERCMD) build/$(DOCKERCMD) buildx build --platform linux\/arm64 --progress plain --output=type=docker/' $(HARBOR_PHOTON_MAKEFILE_PATH)
 
 _update_chartserver:
 	@echo "update goharbor chartserver compile.sh"
@@ -137,12 +140,23 @@ _update_notary:
 	@echo "update goharbor notary binary.Dockerfile"
 	@$(SEDCMDI) '8 a ENV CGO_ENABLED 0 \nENV GOOS linux \nENV GOARCH arm64' $(HARBOR_PHOTON_NOTARY_DOCKERFILE_PATH)
 
-pre_update: _update_makefile _update_make_photon_makefile _update_chartserver _update_registry _update_trivy-adapter _update_notary _update_portal
+_update_exporter:
+	@echo "update goharbor exporter Dockerfile"
+	@$(SEDCMDI) 's/ENV GOARCH=amd64/ENV GOARCH=arm64/g' $(HARBOR_PHOTON_EXPORTER_PATH)
+
+pre_update: _update_makefile _update_make_photon_makefile _update_chartserver _update_registry _update_trivy-adapter _update_notary _update_portal _update_exporter
 
 # downlaod goharbor/harbor source code
 download:
 	$(shell git clone --branch $(HARBOR_TAG) $(HARBOR_SOURCE_URL) $(SRCPATH))
 	@echo "download goharbor/harbor source code success"
+	cd $(CURDIR)/redis && sudo bash $(CURDIR)/redis/rpm_builder.sh && cd - ;
+	@echo "copy redis.base binary to goharbor/harbor/make/photon/redis fodler"
+	cp -r $(CURDIR)/redis/. $(BUILDPATH)/make/photon/redis
+	@echo "copy tools fodler to goharbor/harbor/tools fodler"
+	cp -r $(CURDIR)/tools/. $(BUILDPATH)/tools/
+	@echo "copy tests bash fodler to goharbor/harbor/tests fodler"
+	cp -r $(CURDIR)/tests/. $(BUILDPATH)/tests/
 
 compile: 
 	cd $(SRCPATH) && make -f Makefile $(MAKE_COMPILE)
@@ -154,11 +168,11 @@ build_base_image:
 
 package_online:
 	cd $(SRCPATH) && make -f Makefile $(MAKE_ONLINE)
-	
+
 .PHONY: build
-build: download pre_update compile 
+build: 
+	@echo "build harbor-arm image"
 	cd $(SRCPATH) && make -f Makefile $(MAKE_BUILD) -e DEVFLAG=$(DEVFLAG) \
-	 -e TRIVY_DOWNLOAD_URL=$(TRIVY_DOWNLOAD_URL) -e TRIVY_ADAPTER_DOWNLOAD_URL=$(TRIVY_ADAPTER_DOWNLOAD_URL) \
 	 -e REGISTRYUSER=$(REGISTRYUSER) -e REGISTRYPASSWORD=$(REGISTRYPASSWOR) \
-	 -e BUILD_PG96=$(BUILD_PG96) -e PULL_BASE_FROM_DOCKERHUB=$(PULL_BASE_FROM_DOCKERHUB) \
-	 -e BUILD_BASE=$(BUILD_BASE)
+	 -e PULL_BASE_FROM_DOCKERHUB=$(PULL_BASE_FROM_DOCKERHUB) \
+	 -e BUILD_BASE=$(BUILD_BASE) -e VERSIONTAG=$(VERSIONTAG)
